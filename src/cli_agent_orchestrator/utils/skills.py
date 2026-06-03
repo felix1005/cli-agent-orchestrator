@@ -28,9 +28,9 @@ def validate_skill_name(skill_name: str) -> str:
     normalized_name = skill_name.strip()
     if not normalized_name:
         raise SkillNameError("Skill name must not be empty")
-    if "/" in normalized_name or "\\" in normalized_name or ".." in normalized_name:
+    if "/" in normalized_name or "\" in normalized_name or ".." in normalized_name:
         raise SkillNameError(
-            f"Invalid skill name '{skill_name}': must not contain '/', '\\', or '..'"
+            f"Invalid skill name '{skill_name}': must not contain '/', '\', or '..'"
         )
     return normalized_name
 
@@ -70,38 +70,85 @@ def _load_skill_folder(skill_path: Path) -> Tuple[SkillMetadata, str]:
     return metadata, content
 
 
+def _get_all_skill_dirs() -> List[Path]:
+    """Return the canonical skill store followed by any configured extra directories.
+
+    The canonical store (``SKILLS_DIR``) is always first so built-in skills
+    take precedence over entries in ``extra_skill_dirs``.  Extra directories
+    are resolved with ``Path.expanduser()`` so ``~``-prefixed paths work.
+    Invalid or non-existent paths are silently skipped.
+    """
+    dirs: List[Path] = [SKILLS_DIR]
+    try:
+        from cli_agent_orchestrator.services.settings_service import get_extra_skill_dirs
+
+        for raw in get_extra_skill_dirs():
+            p = Path(raw).expanduser()
+            if p.is_dir():
+                dirs.append(p)
+            else:
+                logger.debug(
+                    "extra_skill_dirs entry does not exist or is not a directory: %s", raw
+                )
+    except Exception as exc:
+        logger.warning("Failed to load extra_skill_dirs from settings: %s", exc)
+    return dirs
+
+
+def _find_skill_path(skill_name: str) -> Path:
+    """Locate the folder for *skill_name* across all configured skill directories.
+
+    Returns the first match found (canonical store has priority).
+    Raises ``FileNotFoundError`` when the skill is absent from every directory.
+    """
+    for skill_dir in _get_all_skill_dirs():
+        candidate = skill_dir / skill_name
+        if candidate.is_dir() and (candidate / "SKILL.md").is_file():
+            return candidate
+    raise FileNotFoundError(
+        f"Skill '{skill_name}' not found in any configured skill directory"
+    )
+
+
 def load_skill_metadata(name: str) -> SkillMetadata:
-    """Load validated metadata for a single installed skill."""
+    """Load validated metadata for a single skill, searching all skill directories."""
     skill_name = validate_skill_name(name)
-    skill_path = SKILLS_DIR / skill_name
+    skill_path = _find_skill_path(skill_name)
     metadata, _ = _load_skill_folder(skill_path)
     return metadata
 
 
 def load_skill_content(name: str) -> str:
-    """Load the Markdown body content for a single installed skill."""
+    """Load the Markdown body content for a single skill, searching all skill directories."""
     skill_name = validate_skill_name(name)
-    skill_path = SKILLS_DIR / skill_name
+    skill_path = _find_skill_path(skill_name)
     _, content = _load_skill_folder(skill_path)
     return content
 
 
 def list_skills() -> List[SkillMetadata]:
-    """Return all valid skills from the local skill store sorted by name."""
-    if not SKILLS_DIR.exists():
-        return []
+    """Return all valid skills from all configured skill directories, sorted by name.
 
-    skills: List[SkillMetadata] = []
-    for item in SKILLS_DIR.iterdir():
-        if not item.is_dir():
+    Skills are deduplicated by name -- the first directory that provides a
+    given skill name wins (canonical store first, then extra dirs in order).
+    """
+    seen: dict[str, SkillMetadata] = {}
+
+    for skill_dir in _get_all_skill_dirs():
+        if not skill_dir.exists():
             continue
+        for item in sorted(skill_dir.iterdir()):
+            if not item.is_dir():
+                continue
+            if item.name in seen:
+                continue
+            try:
+                metadata, _ = _load_skill_folder(item)
+                seen[metadata.name] = metadata
+            except Exception as exc:
+                logger.warning("Skipping invalid skill folder '%s': %s", item, exc)
 
-        try:
-            skills.append(load_skill_metadata(item.name))
-        except Exception as exc:
-            logger.warning("Skipping invalid skill folder '%s': %s", item, exc)
-
-    return sorted(skills, key=lambda skill: skill.name)
+    return sorted(seen.values(), key=lambda skill: skill.name)
 
 
 def build_skill_catalog() -> str:
@@ -112,7 +159,8 @@ def build_skill_catalog() -> str:
 
     skill_lines = [f"- **{skill.name}**: {skill.description}" for skill in skills]
 
-    return "\n".join(
+    return "
+".join(
         [
             "## Available Skills",
             "",

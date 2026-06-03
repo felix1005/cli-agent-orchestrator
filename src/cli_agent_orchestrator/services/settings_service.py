@@ -69,7 +69,7 @@ def get_memory_settings() -> Dict[str, Any]:
 
     ``enabled`` defaults to ``True`` (opt-out) to preserve current shipping
     behavior. Setting it to ``False`` disables all memory subsystem
-    operations — see ``is_memory_enabled()``.
+    operations -- see ``is_memory_enabled()``.
     """
     settings = _load()
     defaults: Dict[str, Any] = {"enabled": True, "flush_threshold": 0.85}
@@ -97,8 +97,8 @@ def set_memory_setting(key: str, value: Any) -> Dict[str, Any]:
     """Update a single memory setting.
 
     Supported keys:
-        ``enabled`` (bool) — master switch for the memory subsystem.
-        ``flush_threshold`` (float, 0.0 < x ≤ 1.0) — context-usage trigger.
+        ``enabled`` (bool) -- master switch for the memory subsystem.
+        ``flush_threshold`` (float, 0.0 < x <= 1.0) -- context-usage trigger.
     """
     settings = _load()
     memory = settings.get("memory", {})
@@ -133,3 +133,35 @@ def set_extra_agent_dirs(dirs: List[str]) -> List[str]:
     settings["extra_agent_dirs"] = [d for d in dirs if d.strip()]
     _save(settings)
     return settings["extra_agent_dirs"]
+
+
+def get_extra_skill_dirs() -> List[str]:
+    """Get extra skill scan directories.
+
+    Each entry is a path to a directory that follows the same layout as the
+    canonical skill store: one sub-folder per skill, each containing a
+    ``SKILL.md`` file with ``name`` and ``description`` frontmatter.
+
+    Skills in the canonical store (``~/.aws/cli-agent-orchestrator/skills/``)
+    take precedence -- a skill that appears in both retains its built-in
+    version.  Extra directories are scanned in list order; first-found wins
+    among extra dirs.
+
+    Example ``settings.json`` entry::
+
+        {
+          "extra_skill_dirs": [
+            "/volume/spacemeetplace/.github/skills"
+          ]
+        }
+    """
+    settings = _load()
+    return settings.get("extra_skill_dirs", [])
+
+
+def set_extra_skill_dirs(dirs: List[str]) -> List[str]:
+    """Set extra skill scan directories."""
+    settings = _load()
+    settings["extra_skill_dirs"] = [d for d in dirs if d.strip()]
+    _save(settings)
+    return settings["extra_skill_dirs"]

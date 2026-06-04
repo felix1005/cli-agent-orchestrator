@@ -28,7 +28,7 @@ def validate_skill_name(skill_name: str) -> str:
     normalized_name = skill_name.strip()
     if not normalized_name:
         raise SkillNameError("Skill name must not be empty")
-    if "/" in normalized_name or "\" in normalized_name or ".." in normalized_name:
+    if "/" in normalized_name or "\\" in normalized_name or ".." in normalized_name:
         raise SkillNameError(
             f"Invalid skill name '{skill_name}': must not contain '/', '\', or '..'"
         )
@@ -159,8 +159,7 @@ def build_skill_catalog() -> str:
 
     skill_lines = [f"- **{skill.name}**: {skill.description}" for skill in skills]
 
-    return "
-".join(
+    return "\n".join(
         [
             "## Available Skills",
             "",

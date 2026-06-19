@@ -20,7 +20,7 @@ Terminal Workflow:
 import logging
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Dict, Optional
 
@@ -272,7 +272,7 @@ def create_terminal(
             agent_profile=agent_profile,
             shell_command=shell_command,
             status=TerminalStatus.IDLE,
-            last_active=datetime.now(),
+            last_active=datetime.now(timezone.utc),
         )
 
         logger.info(

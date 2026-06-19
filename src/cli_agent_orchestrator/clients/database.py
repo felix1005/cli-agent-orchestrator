@@ -37,7 +37,7 @@ class TerminalModel(Base):
     agent_profile = Column(String)  # "developer", "reviewer" (optional)
     allowed_tools = Column(String, nullable=True)  # JSON-encoded list of CAO tool names
     shell_command = Column(String, nullable=True)  # shell process name captured before kiro launch
-    last_active = Column(DateTime, default=datetime.now)
+    last_active = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
 class InboxModel(Base):
@@ -294,7 +294,7 @@ def update_last_active(terminal_id: str) -> bool:
     with SessionLocal() as db:
         terminal = db.query(TerminalModel).filter(TerminalModel.id == terminal_id).first()
         if terminal:
-            terminal.last_active = datetime.now()
+            terminal.last_active = datetime.now(timezone.utc)
             db.commit()
             return True
         return False

@@ -158,6 +158,16 @@ class ClaudeCodeProvider(BaseProvider):
             for tool in disallowed:
                 command_parts.extend(["--disallowedTools", tool])
 
+        # Always block tools with known failure modes that profile prose alone cannot fix:
+        # - mcp__cao-mcp-server__handoff: returns empty after ~16s without running the agent
+        #   (MCP defect); supervisors loop-call it indefinitely.
+        # - Agent / Task: spawning sub-agents orphans them outside CAO's session lifecycle,
+        #   wastes tokens, and causes hangs. --disallowedTools is enforced even under
+        #   --dangerously-skip-permissions.
+        for _blocked in ["mcp__cao-mcp-server__handoff", "Agent", "Task"]:
+            if _blocked not in command_parts:
+                command_parts.extend(["--disallowedTools", _blocked])
+
         # Use shlex.join() for proper shell escaping of all arguments
         # This correctly handles multiline strings, quotes, and special characters
         claude_cmd = shlex.join(command_parts)
@@ -282,8 +292,32 @@ class ClaudeCodeProvider(BaseProvider):
         # falsely return IDLE on the old shell prompt before claude even starts.
         pre_launch_snapshot = tmux_client.get_history(self.session_name, self.window_name) or ""
 
-        # Send Claude Code command using tmux client
-        tmux_client.send_keys(self.session_name, self.window_name, command)
+        # The full claude command (with --append-system-prompt) can exceed 70 KB.
+        # tmux paste-buffer without bracketed paste falls through to raw TTY delivery;
+        # Linux's N_TTY input buffer is 4096 bytes — overflow is silently discarded,
+        # bash sees a truncated/unclosed string and stalls, causing a 30 s init timeout.
+        # Route long commands through a per-session temp script to bypass the limit.
+        _PASTE_SAFE = 3800
+        if len(command) > _PASTE_SAFE:
+            import os as _os
+            import tempfile as _tempfile
+
+            with _tempfile.NamedTemporaryFile(
+                mode="w",
+                suffix=".sh",
+                delete=False,
+                prefix=f"/tmp/cao-{self.session_name[:12]}-",
+            ) as _f:
+                _f.write("#!/bin/bash\n")
+                _f.write(command + "\n")
+                _tmpfile = _f.name
+            _os.chmod(_tmpfile, 0o700)
+            tmux_client.send_keys(
+                self.session_name, self.window_name, f"bash {_tmpfile}; rm -f {_tmpfile}"
+            )
+        else:
+            # Send Claude Code command using tmux client
+            tmux_client.send_keys(self.session_name, self.window_name, command)
 
         # Handle startup prompts (bypass permissions + workspace trust)
         self._handle_startup_prompts(timeout=20.0)
@@ -401,6 +435,26 @@ class ClaudeCodeProvider(BaseProvider):
             and not re.search(BYPASS_PROMPT_PATTERN, output)
         ):
             return TerminalStatus.WAITING_USER_ANSWER
+
+        # TOOL-EXECUTION PROCESSING: when Claude runs a bash/tool command the pane shows
+        # ────\n❯ <cmd>\n────\n  ⏵⏵ …  The ❯ matches IDLE_PROMPT_PATTERN and a prior ⏺
+        # in scrollback would make the COMPLETED branch fire. Detect this by checking the
+        # first non-empty line between the second-to-last and last separator: if it is
+        # ❯ <something> (U+276F only — plain ">" appears in markdown blockquotes) the
+        # agent is mid-tool, not idle.
+        # _sep_positions[i] is the byte offset of the ─ char; skip past its newline so the
+        # slice starts with the content line, not the separator itself.
+        if len(_sep_positions) >= 2:
+            _sep2_end = output.find("\n", _sep_positions[-2])
+            if _sep2_end == -1:
+                _sep2_end = _sep_positions[-2]
+            _between = output[_sep2_end : _sep_positions[-1]]
+            for _ln in _between.splitlines():
+                _ls = _ln.strip()
+                if _ls:
+                    if re.match(r"❯[\s\xa0]+\S", _ls):
+                        return TerminalStatus.PROCESSING
+                    break
 
         # COMPLETED: ⏺ response exists AND ❯ prompt is visible (agent finished).
         if last_response and last_idle:

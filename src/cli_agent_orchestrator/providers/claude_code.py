@@ -33,14 +33,14 @@ RESPONSE_PATTERN = r"[⏺●](?:\x1b\[[0-9;]*m)*\s+"  # Handle both U+23FA (old)
 # - New format: "✽ Cooking… (6s · ↓ 174 tokens · thinking)"
 # - Minimal format: "✻ Orbiting…" (no parenthesized status)
 # Common: spinner char + text + ellipsis, optionally followed by parenthesized status
-PROCESSING_PATTERN = r"[✶✢✽✻✳·].*\u2026"
+PROCESSING_PATTERN = r"[✶✢✽✻✳·*].*\u2026"
 # Structural PROCESSING indicator (reference pattern — get_status uses an
 # inline last-separator-anchored version to avoid false positives from
 # mid-conversation compaction events like "✢ Compacting conversation…"):
 # a spinner line (spinner char + … ) immediately before the ────────
 # separator, allowing 0–2 blank lines between them.
 THINKING_BEFORE_SEPARATOR_PATTERN = re.compile(
-    r"[^\n]*[✶✢✽✻✳·][^\n]*\u2026[^\n]*\n(?:[^\n]*\n){0,2}(?:\x1b\[[0-9;]*m)*\u2500{20,}",
+    r"[^\n]*[✶✢✽✻✳·*][^\n]*\u2026[^\n]*\n(?:[^\n]*\n){0,2}(?:\x1b\[[0-9;]*m)*\u2500{20,}",
     re.MULTILINE,
 )
 IDLE_PROMPT_PATTERN = r"[>❯][\s\xa0]"  # Handle both old ">" and new "❯" prompt styles
@@ -402,7 +402,7 @@ class ClaudeCodeProvider(BaseProvider):
         if _sep_positions:
             pre_sep_lines = output[: _sep_positions[-1]].rstrip("\n").split("\n")
             for line in reversed(pre_sep_lines):
-                if re.search(r"[✶✢✽✻✳·][^\n]*\u2026", line):
+                if re.search(r"[✶✢✽✻✳·*][^\n]*\u2026", line):
                     return TerminalStatus.PROCESSING  # spinner before another separator
                 if _sep_re.search(line):
                     break  # hit another separator first — spinner is from a completed task

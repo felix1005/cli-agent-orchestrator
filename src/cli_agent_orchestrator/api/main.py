@@ -453,7 +453,15 @@ async def create_session(
         # Parse comma-separated allowed_tools string into list
         allowed_tools_list = allowed_tools.split(",") if allowed_tools else None
 
-        result = session_service.create_session(
+        # session_service.create_session() is synchronous and blocks on
+        # provider.initialize()'s startup-detection polling loop for up to
+        # ~50s. Running it inline on the event loop starves every other
+        # concurrent request (health checks, memory_store calls from other
+        # live sessions) for the duration — offload to a worker thread so
+        # concurrent CAO orchestration doesn't stall each other's session
+        # creation.
+        result = await asyncio.to_thread(
+            session_service.create_session,
             provider=provider,
             agent_profile=agent_profile,
             session_name=session_name,
@@ -532,7 +540,11 @@ async def delete_session(request: Request, session_name: str) -> Dict:
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     try:
-        result = session_service.delete_session(session_name, registry=get_plugin_registry(request))
+        # See the create_session handler's comment above — same event-loop
+        # starvation risk applies to teardown.
+        result = await asyncio.to_thread(
+            session_service.delete_session, session_name, registry=get_plugin_registry(request)
+        )
         return {"success": True, **result}
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
@@ -570,7 +582,12 @@ async def create_terminal_in_session(
         # Parse comma-separated allowed_tools string into list
         allowed_tools_list = allowed_tools.split(",") if allowed_tools else None
 
-        result = terminal_service.create_terminal(
+        # Same event-loop starvation risk as the top-level create_session
+        # handler above — every worker terminal spawned into an existing
+        # session (developer/reviewer/planner via `assign`) also blocks on
+        # provider.initialize() for up to ~50s.
+        result = await asyncio.to_thread(
+            terminal_service.create_terminal,
             provider=resolved_provider,
             agent_profile=agent_profile,
             session_name=session_name,

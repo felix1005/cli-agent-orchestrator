@@ -37,6 +37,7 @@ from cli_agent_orchestrator.plugins import (
 from cli_agent_orchestrator.providers.manager import provider_manager
 from cli_agent_orchestrator.services.plugin_dispatch import dispatch_plugin_event
 from cli_agent_orchestrator.services.session_env import clear_session_env
+from cli_agent_orchestrator.services.session_lock import session_lifecycle_lock
 from cli_agent_orchestrator.services.terminal_service import create_terminal
 from cli_agent_orchestrator.utils.agent_profiles import resolve_provider
 
@@ -122,27 +123,34 @@ def delete_session(session_name: str, registry: PluginRegistry | None = None) ->
     """
     result: Dict = {"deleted": [], "errors": []}
     try:
-        if not tmux_client.session_exists(session_name):
-            raise ValueError(f"Session '{session_name}' not found")
+        # Serialize this teardown against any concurrent create_terminal()
+        # of the same session name (#498-style race) — see session_lock.py.
+        # Held across the full existence-check-through-registry-sweep
+        # critical section; provider cleanup below has no long polling loop
+        # comparable to provider.initialize(), so it stays inside the lock
+        # unlike the create path's initialize() call.
+        with session_lifecycle_lock(session_name):
+            if not tmux_client.session_exists(session_name):
+                raise ValueError(f"Session '{session_name}' not found")
 
-        terminals = list_terminals_by_session(session_name)
+            terminals = list_terminals_by_session(session_name)
 
-        # Cleanup providers (non-blocking — don't let failures stop deletion)
-        for terminal in terminals:
-            try:
-                provider_manager.cleanup_provider(terminal["id"])
-            except Exception as e:
-                logger.warning(f"Provider cleanup failed for {terminal['id']}: {e}")
+            # Cleanup providers (non-blocking — don't let failures stop deletion)
+            for terminal in terminals:
+                try:
+                    provider_manager.cleanup_provider(terminal["id"])
+                except Exception as e:
+                    logger.warning(f"Provider cleanup failed for {terminal['id']}: {e}")
 
-        # Kill tmux session
-        tmux_client.kill_session(session_name)
+            # Kill tmux session
+            tmux_client.kill_session(session_name)
 
-        # Delete terminal metadata
-        delete_terminals_by_session(session_name)
+            # Delete terminal metadata
+            delete_terminals_by_session(session_name)
 
-        # Drop the per-session forwarded-env mapping (issue #248). Safe
-        # even when no vars were forwarded — the helper is a no-op then.
-        clear_session_env(session_name)
+            # Drop the per-session forwarded-env mapping (issue #248). Safe
+            # even when no vars were forwarded — the helper is a no-op then.
+            clear_session_env(session_name)
 
         result["deleted"].append(session_name)
         logger.info(f"Deleted session: {session_name}")

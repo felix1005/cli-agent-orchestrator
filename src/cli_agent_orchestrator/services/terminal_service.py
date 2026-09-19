@@ -20,6 +20,7 @@ Terminal Workflow:
 import logging
 import threading
 import time
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Dict, Optional
@@ -50,6 +51,7 @@ from cli_agent_orchestrator.services.session_env import (
     get_session_env,
     set_session_env,
 )
+from cli_agent_orchestrator.services.session_lock import session_lifecycle_lock
 from cli_agent_orchestrator.utils.agent_profiles import load_agent_profile
 from cli_agent_orchestrator.utils.skills import build_skill_catalog
 from cli_agent_orchestrator.utils.terminal import (
@@ -163,56 +165,68 @@ def create_terminal(
 
         window_name = generate_window_name(agent_profile)
 
-        # Step 2: Create tmux session or window
-        if new_session:
-            # Ensure session name has the CAO prefix for identification
-            if not session_name.startswith(SESSION_PREFIX):
-                session_name = f"{SESSION_PREFIX}{session_name}"
+        # Ensure session name has the CAO prefix for identification, before
+        # the lifecycle lock below — the lock must key on the FINAL name.
+        if new_session and not session_name.startswith(SESSION_PREFIX):
+            session_name = f"{SESSION_PREFIX}{session_name}"
 
-            # Prevent duplicate sessions
-            if tmux_client.session_exists(session_name):
-                raise ValueError(f"Session '{session_name}' already exists")
+        # Step 2+3: Create tmux session/window, then persist terminal metadata.
+        # Only a NEW session identity (new_session=True) needs to be
+        # serialized against a concurrent delete_session() of the same name
+        # (#498-style race: a create landing while a same-named teardown is
+        # still in flight can orphan tmux state or a registry row). Adding a
+        # window to an already-existing session doesn't create/destroy a
+        # session identity, so it doesn't need the lock. The lock is held
+        # only across this short critical section — released before the
+        # long provider.initialize() call below — so a teardown of this name
+        # is never blocked behind an agent launch.
+        lock_cm = session_lifecycle_lock(session_name) if new_session else nullcontext()
+        with lock_cm:
+            if new_session:
+                # Prevent duplicate sessions
+                if tmux_client.session_exists(session_name):
+                    raise ValueError(f"Session '{session_name}' already exists")
 
-            # Wipe any stale mapping a prior aborted lifecycle for this name
-            # may have left behind, so a no-env relaunch can't inherit them.
-            clear_session_env(session_name)
+                # Wipe any stale mapping a prior aborted lifecycle for this name
+                # may have left behind, so a no-env relaunch can't inherit them.
+                clear_session_env(session_name)
 
-            # Create new tmux session with initial window
-            tmux_client.create_session(
+                # Create new tmux session with initial window
+                tmux_client.create_session(
+                    session_name,
+                    window_name,
+                    terminal_id,
+                    working_directory,
+                    extra_env=env_vars,
+                )
+                session_created = True  # only set after successful creation
+
+                # Persist forwarded env only after the tmux session actually
+                # exists; the failure path below clears it if a later step
+                # tears the session back down.
+                if env_vars:
+                    set_session_env(session_name, env_vars)
+            else:
+                # Add window to existing session
+                if not tmux_client.session_exists(session_name):
+                    raise ValueError(f"Session '{session_name}' not found")
+                window_name = tmux_client.create_window(
+                    session_name,
+                    window_name,
+                    terminal_id,
+                    working_directory,
+                    extra_env=get_session_env(session_name),
+                )
+
+            # Step 3: Persist terminal metadata to database
+            db_create_terminal(
+                terminal_id,
                 session_name,
                 window_name,
-                terminal_id,
-                working_directory,
-                extra_env=env_vars,
+                provider,
+                agent_profile,
+                allowed_tools,
             )
-            session_created = True  # only set after successful creation
-
-            # Persist forwarded env only after the tmux session actually
-            # exists; the failure path below clears it if a later step
-            # tears the session back down.
-            if env_vars:
-                set_session_env(session_name, env_vars)
-        else:
-            # Add window to existing session
-            if not tmux_client.session_exists(session_name):
-                raise ValueError(f"Session '{session_name}' not found")
-            window_name = tmux_client.create_window(
-                session_name,
-                window_name,
-                terminal_id,
-                working_directory,
-                extra_env=get_session_env(session_name),
-            )
-
-        # Step 3: Persist terminal metadata to database
-        db_create_terminal(
-            terminal_id,
-            session_name,
-            window_name,
-            provider,
-            agent_profile,
-            allowed_tools,
-        )
 
         # Step 3b: Load the profile once for allowed tool resolution before
         # provider initialization. The skill catalog is computed only for

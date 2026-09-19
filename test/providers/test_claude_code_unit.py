@@ -41,6 +41,38 @@ class TestClaudeCodeProviderInitialization:
         mock_wait_shell.assert_called_once()
         mock_tmux.send_keys.assert_called_once()
 
+    @_PATCH_SETTINGS
+    @patch("cli_agent_orchestrator.providers.claude_code.wait_for_shell")
+    @patch("cli_agent_orchestrator.providers.claude_code.wait_until_status")
+    @patch("cli_agent_orchestrator.providers.claude_code.tmux_client")
+    def test_initialize_succeeds_on_waiting_user_answer(
+        self, mock_tmux, mock_wait_status, mock_wait_shell, _
+    ):
+        """A recognized interactive prompt (e.g. an unrecognized-by-name startup dialog)
+        must succeed init instead of timing out and tearing the session down.
+
+        Regression test for the "Claude Code initialization timed out" incident this
+        fork's WAITING_USER_ANSWER_PATTERN broadening + initialize() accept-set change
+        (ported from upstream cli-agent-orchestrator PR #538/#539, round 1) fixes.
+        Pre-patch, get_status() returning WAITING_USER_ANSWER here was NOT in
+        initialize()'s accept-set, so this scenario raised TimeoutError instead of
+        succeeding — this test fails on the pre-patch code and passes after it.
+        """
+        mock_wait_shell.return_value = True
+        mock_wait_status.return_value = True
+        mock_tmux.get_history.side_effect = [
+            "",
+            "Welcome to Claude Code v2.0",
+            "Welcome to Claude Code v2.0",
+        ]
+
+        provider = ClaudeCodeProvider("test123", "test-session", "window-0")
+        with patch.object(provider, "get_status", return_value=TerminalStatus.WAITING_USER_ANSWER):
+            result = provider.initialize()
+
+        assert result is True
+        assert provider._initialized is True
+
     @patch("cli_agent_orchestrator.providers.claude_code.wait_for_shell")
     @patch("cli_agent_orchestrator.providers.claude_code.tmux_client")
     def test_initialize_shell_timeout(self, mock_tmux, mock_wait_shell):

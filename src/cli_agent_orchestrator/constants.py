@@ -119,6 +119,20 @@ API_BASE_URL = f"http://{SERVER_HOST}:{SERVER_PORT}"
 # Default timeout (seconds) for HTTP calls to the CAO API server.
 MCP_REQUEST_TIMEOUT = 30
 
+# Timeout (seconds) for calls that create a session or terminal — these block
+# server-side on ClaudeCodeProvider.initialize()'s startup-detection polling
+# (up to ~90s worst case: 30s startup-prompt handling + 60s main wait, see
+# providers/claude_code.py), which can legitimately exceed MCP_REQUEST_TIMEOUT
+# for a large agent profile's system prompt (e.g. bmad_supervisor's ~126KB
+# --append-system-prompt payload) under concurrent load. Using the generic
+# 30s MCP_REQUEST_TIMEOUT here cuts the client off before a launch that is
+# still succeeding server-side gets a chance to finish — this is the root
+# cause of the repeated "Failed to delete session ... not found" / "Startup
+# prompt handler timed out" / "Claude Code initialization timed out after 30
+# seconds" failure signature. Comfortably above the server-side worst case so
+# a legitimately slow-but-succeeding init isn't cut off.
+TERMINAL_CREATE_REQUEST_TIMEOUT = 100
+
 
 # Operators can extend network allowlists via the env vars handled below.
 # Same comma-separated pattern as ``CAO_PROFILE_ALLOWED_HOSTS`` in install_service.

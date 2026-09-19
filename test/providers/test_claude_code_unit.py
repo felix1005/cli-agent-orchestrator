@@ -99,7 +99,10 @@ class TestClaudeCodeProviderInitialization:
 
         with (
             patch.object(provider, "_handle_startup_prompts"),
-            patch("cli_agent_orchestrator.providers.claude_code.time.time", side_effect=[0, 31]),
+            # 61s exceeds the 60.0 deadline (widened from 30.0 — see
+            # providers/claude_code.py's initialize()) on the very first
+            # while-condition check, same structural shape as before.
+            patch("cli_agent_orchestrator.providers.claude_code.time.time", side_effect=[0, 61]),
             patch("cli_agent_orchestrator.providers.claude_code.time.sleep"),
         ):
             with pytest.raises(TimeoutError, match="Claude Code initialization timed out"):

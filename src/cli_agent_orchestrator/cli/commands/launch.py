@@ -14,6 +14,7 @@ from cli_agent_orchestrator.constants import (
     PROVIDERS,
     SERVER_HOST,
     SERVER_PORT,
+    TERMINAL_CREATE_REQUEST_TIMEOUT,
 )
 from cli_agent_orchestrator.models.terminal import TerminalStatus
 from cli_agent_orchestrator.utils.terminal import poll_until_done, wait_until_terminal_status
@@ -281,7 +282,10 @@ def launch(
         # Forwarded env vars travel in the JSON body so values (which may
         # contain secrets) don't end up in cao-server's HTTP access log.
         # See issue #248.
-        post_kwargs: dict = {"params": params, "timeout": MCP_REQUEST_TIMEOUT}
+        # TERMINAL_CREATE_REQUEST_TIMEOUT, not the generic MCP_REQUEST_TIMEOUT
+        # — this call blocks server-side on the new terminal's full agent
+        # startup (up to ~90s), not a quick API round-trip.
+        post_kwargs: dict = {"params": params, "timeout": TERMINAL_CREATE_REQUEST_TIMEOUT}
         if forwarded_env:
             post_kwargs["json"] = {"env_vars": forwarded_env}
 

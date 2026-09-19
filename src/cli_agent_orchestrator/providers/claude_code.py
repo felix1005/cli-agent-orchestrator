@@ -339,8 +339,14 @@ class ClaudeCodeProvider(BaseProvider):
             # Send Claude Code command using tmux client
             tmux_client.send_keys(self.session_name, self.window_name, command)
 
-        # Handle startup prompts (bypass permissions + workspace trust)
-        self._handle_startup_prompts(timeout=20.0)
+        # Handle startup prompts (bypass permissions + workspace trust).
+        # 30s (was 20s) — a large agent profile's --append-system-prompt
+        # payload (e.g. bmad_supervisor's ~126KB) measurably slows Claude
+        # Code's own startup parse under concurrent load; upstream's default
+        # provider_init_timeout is 60s total for this whole method, so 30s
+        # for just this sub-step leaves comfortable room for the main wait
+        # below.
+        self._handle_startup_prompts(timeout=30.0)
 
         # Wait for Claude Code prompt to be ready.
         # Accept both IDLE and COMPLETED — some CLI versions show a startup
@@ -349,7 +355,11 @@ class ClaudeCodeProvider(BaseProvider):
         # We require that new content appeared beyond the pre-launch snapshot
         # before accepting IDLE, to avoid the false-positive where the old zsh
         # ❯ prompt triggers an immediate IDLE return before claude starts.
-        deadline = time.time() + 30.0
+        # 60s (was 30s) — matches upstream's provider_init_timeout default
+        # (settings_service.py DEFAULTS in later releases); the caller
+        # (TERMINAL_CREATE_REQUEST_TIMEOUT, constants.py) already gives the
+        # HTTP client enough headroom to wait out this widened budget.
+        deadline = time.time() + 60.0
         while time.time() < deadline:
             current_output = tmux_client.get_history(self.session_name, self.window_name) or ""
             new_content = current_output[len(pre_launch_snapshot) :]

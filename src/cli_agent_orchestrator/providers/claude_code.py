@@ -45,7 +45,27 @@ THINKING_BEFORE_SEPARATOR_PATTERN = re.compile(
 )
 IDLE_PROMPT_PATTERN = r"[>❯][\s\xa0]"  # Handle both old ">" and new "❯" prompt styles
 WAITING_USER_ANSWER_PATTERN = (
-    r"↑/↓ to navigate"  # Ink TUI footer shown only while a selection widget is active
+    r"↑/↓ to navigate|Enter to confirm[ \t]*·"  # Ink TUI footer(s) shown only while a selection
+    # widget is active. Broadened beyond the original arrow-navigate footer to also catch the
+    # "Enter to confirm · ..." footer Ink's Select component renders for a plain numbered/lettered
+    # choice — deliberately generic prompt CHROME text, not any one prompt's own wording, so a
+    # future, still-unrecognized choice-type prompt (not just ones this file special-cases by name)
+    # is classified WAITING_USER_ANSWER too instead of looking identical to a hung launch.
+    # Anchored to same-line whitespace ("[ \t]*·") rather than "\s*" so a completed turn's own
+    # response text that happens to contain "...press Enter to confirm..." can't false-match across
+    # a line break onto an unrelated "·" elsewhere in the buffer.
+    # Ported from upstream cli-agent-orchestrator PR #538/#539 (round-1 fix + the round-3
+    # same-line-anchor nit), adapted onto this project's pinned v2.2.0 fork — see
+    # _bmad-output/investigations/cao-token-burn-post-update-investigation.md for why this project
+    # forked at 2.2.0 instead of taking the upstream v2.5.0 release. Only the round-1 pattern/accept
+    # change is ported: PR #539's round-2/round-3 follow-ups guard a deferred-init
+    # auto-deliver-initial-message pathway (`_schedule_deferred_init`,
+    # `blocks_orchestrated_input_while_waiting_user_answer`, `TerminalInputBlockedError`,
+    # `answer_user_prompt`) that does not exist anywhere in this v2.2.0 base (confirmed: zero
+    # references to `initial_message` in the entire v2.2.0 tree) — this project's supervisor always
+    # delivers work via an explicit, separate `send_message` call after confirming readiness, never
+    # an initial-message-at-launch race, so that hazard class cannot occur here and porting the
+    # guard machinery for it would be scope creep with nothing to protect.
 )
 TRUST_PROMPT_PATTERN = r"Yes, I trust this folder"  # Workspace trust dialog
 BYPASS_PROMPT_PATTERN = r"Yes, I accept"  # Bypass permissions confirmation dialog
@@ -343,7 +363,20 @@ class ClaudeCodeProvider(BaseProvider):
             )
             if claude_started:
                 status = self.get_status()
-                if status in {TerminalStatus.IDLE, TerminalStatus.COMPLETED}:
+                # WAITING_USER_ANSWER added to the accept-set (ported from upstream PR #538/#539,
+                # round-1). Before this, ANY interactive choice-type prompt this file doesn't
+                # already dismiss by name (bypass/trust above) was structurally indistinguishable
+                # from a genuinely hung launch: both sat outside {IDLE, COMPLETED} until this
+                # deadline, at which point the caller's own except-block tore the whole session
+                # down before a human ever got a chance to see or answer it. A terminal parked on a
+                # real, recognized interactive prompt is alive, not broken — accepting it here lets
+                # the session survive so the prompt can actually be seen/answered instead of being
+                # silently killed on a plain TimeoutError.
+                if status in {
+                    TerminalStatus.IDLE,
+                    TerminalStatus.COMPLETED,
+                    TerminalStatus.WAITING_USER_ANSWER,
+                }:
                     break
             time.sleep(1.0)
         else:

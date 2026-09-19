@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 from cli_agent_orchestrator.clients.tmux import tmux_client
+from cli_agent_orchestrator.constants import CAO_HOME_DIR
 from cli_agent_orchestrator.models.terminal import TerminalStatus
 from cli_agent_orchestrator.providers.base import BaseProvider
 from cli_agent_orchestrator.utils.agent_profiles import load_agent_profile
@@ -140,12 +141,34 @@ class ClaudeCodeProvider(BaseProvider):
             if profile.model:
                 command_parts.extend(["--model", profile.model])
 
-            # Add system prompt - escape newlines to prevent tmux chunking issues
+            # Add system prompt via --append-system-prompt-file, not inline
+            # --append-system-prompt. A profile's system prompt plus an
+            # injected skill catalog (RUNTIME_SKILL_PROMPT_PROVIDERS) can
+            # comfortably exceed 128KB (bmad_supervisor's is ~150KB here) --
+            # the Linux kernel caps any SINGLE argv string at MAX_ARG_STRLEN
+            # (32 pages = 131072 bytes), independent of the much larger
+            # total ARG_MAX. Exceeding it fails execve() with E2BIG *before*
+            # Claude Code ever starts -- silently, from this class's own
+            # polling-based startup detection, which has no way to
+            # distinguish "still starting" from "exec never happened" and
+            # just spins for the full init_timeout. This was the root cause
+            # of this project's repeated "Startup prompt handler timed out"
+            # / "Claude Code initialization timed out" failures once a
+            # profile's prompt+skill-catalog crossed that threshold.
+            # Writing to a file sidesteps the limit entirely (the argv
+            # becomes a short path, regardless of prompt size) and drops
+            # the need for the newline/backslash escaping the inline form
+            # required. Written to CAO_HOME_DIR/tmp, keyed by terminal_id --
+            # the same location and naming already used by other providers'
+            # prompt files in this deployment.
             system_prompt = profile.system_prompt if profile.system_prompt is not None else ""
             system_prompt = self._apply_skill_prompt(system_prompt)
             if system_prompt:
-                escaped_prompt = system_prompt.replace("\\", "\\\\").replace("\n", "\\n")
-                command_parts.extend(["--append-system-prompt", escaped_prompt])
+                prompt_dir = CAO_HOME_DIR / "tmp"
+                prompt_dir.mkdir(parents=True, exist_ok=True)
+                prompt_path = prompt_dir / f"{self.terminal_id}.prompt"
+                prompt_path.write_text(system_prompt)
+                command_parts.extend(["--append-system-prompt-file", str(prompt_path)])
 
             # Add MCP config if present.
             # Forward CAO_TERMINAL_ID so MCP servers (e.g. cao-mcp-server)

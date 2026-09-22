@@ -62,6 +62,45 @@ class TestApplyToolAllowlistComputation:
         apply_tool_allowlist()
         mock_mcp.disable.assert_not_called()
 
+    @patch("cli_agent_orchestrator.mcp_server.server.CAO_MCP_ALLOWED_TOOLS", " , ,, ")
+    @patch("cli_agent_orchestrator.mcp_server.server.mcp")
+    def test_whitespace_or_commas_only_value_is_a_noop_not_a_total_lockout(self, mock_mcp):
+        """A truthy-but-meaningless value (whitespace/commas only, no real tool name) must
+        leave every tool enabled — NOT fall through to disabling all 8 (the bug this guards:
+        an empty `allowed` set previously made `to_disable = ALL_TOOL_NAMES - {}` disable
+        everything, a silent total lockout for a clearly-misconfigured value)."""
+        apply_tool_allowlist()
+        mock_mcp.disable.assert_not_called()
+
+    @patch(
+        "cli_agent_orchestrator.mcp_server.server.CAO_MCP_ALLOWED_TOOLS",
+        "send_message,load_skil",  # typo: missing trailing 'l'
+    )
+    @patch("cli_agent_orchestrator.mcp_server.server.mcp")
+    def test_unknown_tool_name_does_not_block_the_disable_call(self, mock_mcp):
+        """A typo'd/unknown name in the allowlist must not prevent disable() from running for
+        the real tools that ARE correctly named — the unknown entry is warned about (see the
+        caplog-based test below) but otherwise has no effect on the computed disable set."""
+        apply_tool_allowlist()
+        _, kwargs = mock_mcp.disable.call_args
+        # "load_skil" isn't a real tool name, so it can never be in ALL_TOOL_NAMES, so it can
+        # never end up excluded from to_disable — the complement is computed against the one
+        # correctly-spelled name only.
+        assert kwargs["names"] == ALL_TOOL_NAMES - {"send_message"}
+
+    @patch(
+        "cli_agent_orchestrator.mcp_server.server.CAO_MCP_ALLOWED_TOOLS",
+        "send_message,load_skil",
+    )
+    @patch("cli_agent_orchestrator.mcp_server.server.mcp")
+    def test_unknown_tool_name_is_logged(self, mock_mcp, caplog):
+        """The unknown-name case must be observable, not silent — this is the fix for the
+        review finding that a typo produced no diagnostic anywhere. mcp is mocked, same as
+        every other test in this class, so this never touches the real shared server."""
+        with caplog.at_level("WARNING", logger="cli_agent_orchestrator.mcp_server.server"):
+            apply_tool_allowlist()
+        assert any("load_skil" in record.message for record in caplog.records)
+
 
 class TestToolAllowlistIntegration:
     """End-to-end behavioral tests against the real global `mcp` instance via an in-memory
@@ -74,12 +113,13 @@ class TestToolAllowlistIntegration:
 
     @pytest.mark.asyncio
     async def test_filtered_tool_list_and_call_rejection(self):
-        with patch(
-            "cli_agent_orchestrator.mcp_server.server.CAO_MCP_ALLOWED_TOOLS",
-            "send_message,load_skill",
-        ):
-            apply_tool_allowlist()
         try:
+            with patch(
+                "cli_agent_orchestrator.mcp_server.server.CAO_MCP_ALLOWED_TOOLS",
+                "send_message,load_skill",
+            ):
+                apply_tool_allowlist()
+
             async with Client(mcp) as client:
                 tools = await client.list_tools()
                 names = {t.name for t in tools}
@@ -88,6 +128,9 @@ class TestToolAllowlistIntegration:
                 with pytest.raises(ToolError):
                     await client.call_tool("handoff", {"agent_profile": "developer", "message": "x"})
         finally:
+            # apply_tool_allowlist() is inside this try too — if it raised, disable() may
+            # have been called with a partial set; unconditionally re-enabling everything
+            # here still restores a correct state either way, so this is never skipped.
             self._restore_all_enabled()
 
     @pytest.mark.asyncio
@@ -96,12 +139,13 @@ class TestToolAllowlistIntegration:
         interfere with the tools it does not disable. load_skill's own network dependency
         (_load_skill_impl) is mocked so this test proves the call reached the real handler
         without depending on a live cao-server."""
-        with patch(
-            "cli_agent_orchestrator.mcp_server.server.CAO_MCP_ALLOWED_TOOLS",
-            "load_skill",
-        ):
-            apply_tool_allowlist()
         try:
+            with patch(
+                "cli_agent_orchestrator.mcp_server.server.CAO_MCP_ALLOWED_TOOLS",
+                "load_skill",
+            ):
+                apply_tool_allowlist()
+
             with patch(
                 "cli_agent_orchestrator.mcp_server.server._load_skill_impl",
                 return_value="mock skill content",

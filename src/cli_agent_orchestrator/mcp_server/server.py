@@ -1005,14 +1005,33 @@ def apply_tool_allowlist() -> None:
     A disabled tool is dropped from tools/list and rejected with a named ToolError on
     tools/call (FastMCP.disable()/get_tool()) — a startup-time visibility transform, not a
     per-request filter, so this only needs to run once before the server starts serving.
-    No-op when CAO_MCP_ALLOWED_TOOLS is unset or empty.
+    No-op when CAO_MCP_ALLOWED_TOOLS is unset, empty, or resolves to no real tool name after
+    parsing (e.g. whitespace/commas only) — the last case previously fell through to disabling
+    every tool, a silent total lockout for a value that was truthy but meaningless.
     """
     if not CAO_MCP_ALLOWED_TOOLS:
         return
     allowed = {name.strip() for name in CAO_MCP_ALLOWED_TOOLS.split(",") if name.strip()}
+    if not allowed:
+        logger.warning(
+            "CAO_MCP_ALLOWED_TOOLS=%r contains no valid tool name after parsing — "
+            "leaving all tools enabled instead of disabling everything.",
+            CAO_MCP_ALLOWED_TOOLS,
+        )
+        return
+    unknown = allowed - ALL_TOOL_NAMES
+    if unknown:
+        logger.warning(
+            "CAO_MCP_ALLOWED_TOOLS names unknown tool(s) %s — not a registered tool name, "
+            "so this entry has no effect and the tool it was meant to allow stays disabled.",
+            sorted(unknown),
+        )
     to_disable = ALL_TOOL_NAMES - allowed
     if to_disable:
         mcp.disable(names=to_disable, components={"tool"})
+        logger.info(
+            "CAO_MCP_ALLOWED_TOOLS active — disabled tool(s): %s", sorted(to_disable)
+        )
 
 
 def main():

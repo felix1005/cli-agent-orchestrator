@@ -34,6 +34,11 @@ ENABLE_WORKING_DIRECTORY = os.getenv("CAO_ENABLE_WORKING_DIRECTORY", "false").lo
 # Environment variable to enable/disable automatic sender terminal ID injection
 ENABLE_SENDER_ID_INJECTION = os.getenv("CAO_ENABLE_SENDER_ID_INJECTION", "false").lower() == "true"
 
+# Comma-separated allowlist restricting which tools this server advertises over tools/list and
+# accepts via tools/call. Unset or empty = no restriction (every tool below stays enabled) —
+# this is the default/backward-compatible path for any consumer that doesn't set the var.
+CAO_MCP_ALLOWED_TOOLS = os.getenv("CAO_MCP_ALLOWED_TOOLS", "")
+
 # Terminal count threshold for cleanup nudge
 TERMINAL_CLEANUP_NUDGE_THRESHOLD = 10
 
@@ -979,8 +984,40 @@ async def memory_forget(
         return {"success": False, "error": str(e)}
 
 
+# The full set of tool names registered via @mcp.tool() above. Kept in sync with the actual
+# decorators by test/mcp_server/test_allowed_tools_filter.py, which asserts this matches
+# mcp.list_tools() at runtime — update both together if a tool is added/removed/renamed.
+ALL_TOOL_NAMES = {
+    "handoff",
+    "assign",
+    "send_message",
+    "load_skill",
+    "delete_terminal",
+    "memory_store",
+    "memory_recall",
+    "memory_forget",
+}
+
+
+def apply_tool_allowlist() -> None:
+    """Disable every registered tool not named in CAO_MCP_ALLOWED_TOOLS.
+
+    A disabled tool is dropped from tools/list and rejected with a named ToolError on
+    tools/call (FastMCP.disable()/get_tool()) — a startup-time visibility transform, not a
+    per-request filter, so this only needs to run once before the server starts serving.
+    No-op when CAO_MCP_ALLOWED_TOOLS is unset or empty.
+    """
+    if not CAO_MCP_ALLOWED_TOOLS:
+        return
+    allowed = {name.strip() for name in CAO_MCP_ALLOWED_TOOLS.split(",") if name.strip()}
+    to_disable = ALL_TOOL_NAMES - allowed
+    if to_disable:
+        mcp.disable(names=to_disable, components={"tool"})
+
+
 def main():
     """Main entry point for the MCP server."""
+    apply_tool_allowlist()
     mcp.run()
 
 
